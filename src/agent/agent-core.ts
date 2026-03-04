@@ -285,9 +285,31 @@ export class AgentCore {
    */
   private getCopilotClient(): CopilotClient {
     if (!this.copilotClient) {
-      this.copilotClient = new CopilotClient({ logger: this.logger });
+      this.copilotClient = new CopilotClient({
+        model: this.config.model.primary,
+        logger: this.logger,
+      });
     }
     return this.copilotClient;
+  }
+
+  /**
+   * Change the active model at runtime.
+   * Updates config and propagates to CopilotClient if already created.
+   */
+  setModel(model: string): void {
+    this.config.model.primary = model;
+    if (this.copilotClient) {
+      this.copilotClient.setModel(model);
+    }
+    this.logger.info("session", `Model changed to: ${model}`);
+  }
+
+  /**
+   * Get the currently active model name.
+   */
+  getModel(): string {
+    return this.config.model.primary;
   }
 
   /**

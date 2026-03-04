@@ -101,10 +101,14 @@ program
 
     const agent = await initAgent();
 
+    // Apply --model flag to agent (actually affects API calls now)
+    if (options.model && options.model !== agent.getModel()) {
+      agent.setModel(options.model);
+    }
+
     // Launch full-screen Ink TUI
     renderApp({
       agent,
-      model: options.model,
       isAuthenticated,
     });
   });

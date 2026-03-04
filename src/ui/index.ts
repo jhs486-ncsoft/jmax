@@ -9,11 +9,13 @@ export { Message } from "./components/message.js";
 export { Editor } from "./components/editor.js";
 export { StatusBar } from "./components/status-bar.js";
 export { LoadingSpinner } from "./components/spinner.js";
+export { Sidebar, SIDEBAR_WIDTH } from "./components/sidebar.js";
 
 // Hooks
 export { useChat } from "./hooks/use-chat.js";
 export { useScroll } from "./hooks/use-scroll.js";
 export { useTerminalSize } from "./hooks/use-terminal-size.js";
+export { useModelSelector, AVAILABLE_MODELS } from "./hooks/use-model-selector.js";
 
 // Theme & Markdown
 export { colors, styles, icons, inkColors } from "./theme.js";
