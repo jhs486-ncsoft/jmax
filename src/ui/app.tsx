@@ -2,7 +2,7 @@
 // Full-screen layout: Header → MessageList → Editor → StatusBar
 // Keyboard: Ctrl+C quit, Ctrl+N new session, Ctrl+L clear, Esc cancel, PgUp/PgDn scroll
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo, memo } from "react";
 import { render, Box, Text, useInput, useApp } from "ink";
 import type { AgentCore } from "../agent/agent-core.js";
 import { Header } from "./components/header.js";
@@ -22,6 +22,12 @@ const EDITOR_HEIGHT = 3;     // border + content + border
 const STATUS_HEIGHT = 1;     // single line
 const CHROME_HEIGHT = HEADER_HEIGHT + EDITOR_HEIGHT + STATUS_HEIGHT;
 
+// ─── Memoized child components to prevent re-render on parent state change ────
+const MemoHeader = memo(Header);
+const MemoMessageList = memo(MessageList);
+const MemoEditor = memo(Editor);
+const MemoStatusBar = memo(StatusBar);
+
 // ─── Main App ───────────────────────────────────────────────────────
 
 interface AppProps {
@@ -38,12 +44,21 @@ const App: React.FC<AppProps> = ({ agent, model, isAuthenticated }) => {
 
   const chat = useChat(agent);
 
-  // Calculate message area height
-  const messageAreaHeight = Math.max(rows - CHROME_HEIGHT, 5);
+  // Calculate message area height (memoized to avoid recalc on input change)
+  const messageAreaHeight = useMemo(
+    () => Math.max(rows - CHROME_HEIGHT, 5),
+    [rows]
+  );
+
+  // Stable totalLines for scroll (avoid recomputing inline)
+  const totalLines = useMemo(
+    () => chat.messages.length * 4 + (chat.isStreaming ? 4 : 0),
+    [chat.messages.length, chat.isStreaming]
+  );
 
   // Scroll management
   const scroll = useScroll({
-    totalLines: chat.messages.length * 4 + (chat.isStreaming ? 4 : 0),
+    totalLines,
     viewportHeight: messageAreaHeight,
     autoScroll: true,
   });
@@ -75,6 +90,7 @@ const App: React.FC<AppProps> = ({ agent, model, isAuthenticated }) => {
   );
 
   // ─── Keyboard Shortcuts ─────────────────────────────────────────
+  // Only handle special keys; regular characters go to TextInput.
 
   useInput((input, key) => {
     // Ctrl+C: quit (with confirmation)
@@ -126,12 +142,20 @@ const App: React.FC<AppProps> = ({ agent, model, isAuthenticated }) => {
     }
   });
 
+  // ─── Stable props for memoized children ─────────────────────────
+
+  const editorPlaceholder = chat.isStreaming
+    ? "Waiting for response... (Esc to cancel)"
+    : "Type your message...";
+
+  const editorIsActive = !chat.isStreaming;
+
   // ─── Render ─────────────────────────────────────────────────────
 
   return (
     <Box flexDirection="column" height={rows} width={columns}>
       {/* Header */}
-      <Header
+      <MemoHeader
         version={VERSION}
         model={model}
         isAuthenticated={isAuthenticated}
@@ -140,7 +164,7 @@ const App: React.FC<AppProps> = ({ agent, model, isAuthenticated }) => {
 
       {/* Message Area */}
       <Box flexDirection="column" flexGrow={1}>
-        <MessageList
+        <MemoMessageList
           messages={chat.messages}
           streamingContent={chat.streamingContent}
           streamingPhase={chat.streamingPhase}
@@ -160,20 +184,16 @@ const App: React.FC<AppProps> = ({ agent, model, isAuthenticated }) => {
       )}
 
       {/* Editor */}
-      <Editor
+      <MemoEditor
         value={inputValue}
         onChange={setInputValue}
         onSubmit={handleSubmit}
-        isActive={!chat.isStreaming}
-        placeholder={
-          chat.isStreaming
-            ? "Waiting for response... (Esc to cancel)"
-            : "Type your message..."
-        }
+        isActive={editorIsActive}
+        placeholder={editorPlaceholder}
       />
 
       {/* Status Bar */}
-      <StatusBar
+      <MemoStatusBar
         messageCount={chat.messages.length}
         tokenEstimate={chat.tokenEstimate}
         model={model}

@@ -1,7 +1,7 @@
 // MessageList Component - Scrollable message history
 // Renders messages and handles viewport slicing for scroll
 
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, memo } from "react";
 import { Box, Text } from "ink";
 import { Message } from "./message.js";
 import { LoadingSpinner } from "./spinner.js";
@@ -9,6 +9,8 @@ import { inkColors, icons } from "../theme.js";
 import type { ChatMessageData } from "./message.js";
 import type { StreamingPhase } from "./spinner.js";
 import type { ScrollState } from "../hooks/use-scroll.js";
+
+const MemoMessage = memo(Message);
 
 export interface MessageListProps {
   messages: ChatMessageData[];
@@ -27,6 +29,9 @@ export const MessageList: React.FC<MessageListProps> = ({
   height,
   scrollState,
 }) => {
+  // Stable timestamp for streaming message — only created once, not on every render
+  const streamingTimestampRef = useRef(Date.now());
+
   // Render all messages into text lines for scrolling
   const allContent = useMemo(() => {
     const items: React.ReactNode[] = [];
@@ -52,7 +57,7 @@ export const MessageList: React.FC<MessageListProps> = ({
     } else {
       for (const msg of messages) {
         items.push(
-          <Message key={msg.id} message={msg} width={width} />
+          <MemoMessage key={msg.id} message={msg} width={width} />
         );
       }
     }
@@ -60,13 +65,13 @@ export const MessageList: React.FC<MessageListProps> = ({
     // Show streaming content as an in-progress assistant message
     if (streamingPhase !== "idle" && streamingContent) {
       items.push(
-        <Message
+        <MemoMessage
           key="streaming"
           message={{
             id: "streaming",
             role: "assistant",
             content: streamingContent,
-            timestamp: Date.now(),
+            timestamp: streamingTimestampRef.current,
             isStreaming: true,
           }}
           width={width}

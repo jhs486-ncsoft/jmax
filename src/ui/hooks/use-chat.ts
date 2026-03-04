@@ -1,7 +1,7 @@
 // useChat hook - Chat state management
 // Manages messages, streaming state, tool execution feedback, and agent interaction
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import type { AgentCore } from "../../agent/agent-core.js";
 import type { ChatMessageData } from "../components/message.js";
 import type { StreamingPhase } from "../components/spinner.js";
@@ -34,9 +34,18 @@ export function useChat(agent: AgentCore): UseChatResult {
 
   const cancelledRef = useRef(false);
   const streamStartRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isStreaming = streamingPhase !== "idle";
+
+  // Duration timer — declarative effect, only runs while streaming.
+  // Uses 500ms interval instead of 100ms to reduce re-render frequency.
+  useEffect(() => {
+    if (!isStreaming) return;
+    const timer = setInterval(() => {
+      setStreamDuration(Date.now() - streamStartRef.current);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [isStreaming]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -59,12 +68,7 @@ export function useChat(agent: AgentCore): UseChatResult {
       setStreamingContent("");
       setStreamingPhase("thinking");
       setStreamDuration(0);
-
-      // Duration timer
       streamStartRef.current = Date.now();
-      timerRef.current = setInterval(() => {
-        setStreamDuration(Date.now() - streamStartRef.current);
-      }, 100);
 
       try {
         const agentResponse = await agent.chatStream(
@@ -100,12 +104,6 @@ export function useChat(agent: AgentCore): UseChatResult {
           }
         );
 
-        // Clear timer
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-          timerRef.current = null;
-        }
-
         const duration = Date.now() - streamStartRef.current;
 
         if (!cancelledRef.current) {
@@ -127,12 +125,6 @@ export function useChat(agent: AgentCore): UseChatResult {
           );
         }
       } catch (err) {
-        // Clear timer
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-          timerRef.current = null;
-        }
-
         if (!cancelledRef.current) {
           const errorContent =
             err instanceof Error ? err.message : String(err);
@@ -155,10 +147,6 @@ export function useChat(agent: AgentCore): UseChatResult {
 
   const cancelStream = useCallback(() => {
     cancelledRef.current = true;
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
     setStreamingContent("");
     setStreamingPhase("idle");
     setStreamDuration(0);

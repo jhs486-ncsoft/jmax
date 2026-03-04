@@ -1,7 +1,7 @@
 // useScroll hook - Manual scroll state management for message history
 // Supports PgUp/PgDn/Home/End navigation
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 
 export interface ScrollState {
   /** Current scroll offset (line index of top visible line) */
@@ -31,14 +31,12 @@ export interface UseScrollResult {
   scrollToBottom: () => void;
   pageUp: () => void;
   pageDown: () => void;
-  setTotalLines: (n: number) => void;
 }
 
 export function useScroll(options: UseScrollOptions): UseScrollResult {
-  const { viewportHeight, autoScroll = true } = options;
-  const [totalLines, setTotalLines] = useState(options.totalLines);
+  const { totalLines, viewportHeight, autoScroll = true } = options;
   const [offset, setOffset] = useState(0);
-  const [userScrolled, setUserScrolled] = useState(false);
+  const userScrolledRef = useRef(false);
 
   const maxOffset = Math.max(0, totalLines - viewportHeight);
 
@@ -48,18 +46,29 @@ export function useScroll(options: UseScrollOptions): UseScrollResult {
     [maxOffset]
   );
 
-  const isAtBottom = offset >= maxOffset;
+  // Clamp current offset if maxOffset shrunk (e.g., messages cleared)
+  const clampedOffset = Math.min(offset, maxOffset);
+  if (clampedOffset !== offset) {
+    // Synchronous correction — avoid an extra render cycle
+    setOffset(clampedOffset);
+  }
 
-  // Auto-scroll to bottom when new content arrives (if user hasn't scrolled up)
+  const isAtBottom = clampedOffset >= maxOffset;
+
+  // Auto-scroll to bottom when totalLines changes (if user hasn't scrolled up)
+  const prevTotalLinesRef = useRef(totalLines);
   useEffect(() => {
-    if (autoScroll && !userScrolled) {
-      setOffset(maxOffset);
+    if (totalLines !== prevTotalLinesRef.current) {
+      prevTotalLinesRef.current = totalLines;
+      if (autoScroll && !userScrolledRef.current) {
+        setOffset(maxOffset);
+      }
     }
-  }, [totalLines, maxOffset, autoScroll, userScrolled]);
+  }, [totalLines, maxOffset, autoScroll]);
 
   const scrollUp = useCallback(
     (lines = 1) => {
-      setUserScrolled(true);
+      userScrolledRef.current = true;
       setOffset((prev) => clampOffset(prev - lines));
     },
     [clampOffset]
@@ -69,7 +78,7 @@ export function useScroll(options: UseScrollOptions): UseScrollResult {
     (lines = 1) => {
       setOffset((prev) => {
         const next = clampOffset(prev + lines);
-        if (next >= maxOffset) setUserScrolled(false);
+        if (next >= maxOffset) userScrolledRef.current = false;
         return next;
       });
     },
@@ -77,12 +86,12 @@ export function useScroll(options: UseScrollOptions): UseScrollResult {
   );
 
   const scrollToTop = useCallback(() => {
-    setUserScrolled(true);
+    userScrolledRef.current = true;
     setOffset(0);
   }, []);
 
   const scrollToBottom = useCallback(() => {
-    setUserScrolled(false);
+    userScrolledRef.current = false;
     setOffset(maxOffset);
   }, [maxOffset]);
 
@@ -94,19 +103,24 @@ export function useScroll(options: UseScrollOptions): UseScrollResult {
     scrollDown(Math.max(1, viewportHeight - 2));
   }, [scrollDown, viewportHeight]);
 
-  return {
-    state: {
-      offset,
+  // Memoize the state object to avoid new reference on every render
+  const state = useMemo<ScrollState>(
+    () => ({
+      offset: clampedOffset,
       totalLines,
       viewportHeight,
       isAtBottom,
-    },
+    }),
+    [clampedOffset, totalLines, viewportHeight, isAtBottom]
+  );
+
+  return {
+    state,
     scrollUp,
     scrollDown,
     scrollToTop,
     scrollToBottom,
     pageUp,
     pageDown,
-    setTotalLines,
   };
 }
