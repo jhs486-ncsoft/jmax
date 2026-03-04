@@ -196,6 +196,40 @@ export interface LoggingConfig {
   categories: LogCategory[];
 }
 
+// ─── Copilot / Chat ─────────────────────────────────────────────────
+
+export type ChatRole = "system" | "user" | "assistant";
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+}
+
+export interface CopilotAuth {
+  type: "oauth";
+  /** GitHub OAuth access token (ghu_...) */
+  refresh: string;
+  /** Same token duplicated for compat with OpenCode format */
+  access: string;
+  /** Expiry timestamp (0 = no expiry) */
+  expires: number;
+}
+
+export interface DeviceCodeResponse {
+  verification_uri: string;
+  user_code: string;
+  device_code: string;
+  interval: number;
+  expires_in: number;
+}
+
+export interface AccessTokenResponse {
+  access_token?: string;
+  error?: string;
+  error_description?: string;
+  interval?: number;
+}
+
 // ─── Events ─────────────────────────────────────────────────────────
 
 export type AgentEvent =

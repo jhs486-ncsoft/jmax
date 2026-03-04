@@ -4,12 +4,14 @@ import type {
   Logger,
   MemoryStore,
   Task,
+  ChatMessage,
   SkillResult,
 } from "../types/index.js";
 import { EventBus } from "./event-bus.js";
 import { TaskPlanner } from "./task-planner.js";
 import { SkillEngine } from "./skill-engine.js";
 import { ToolRegistryImpl } from "./tool-registry.js";
+import { CopilotClient } from "../copilot/client.js";
 
 export interface AgentCoreOptions {
   config: JMAXConfig;
@@ -27,6 +29,8 @@ export class AgentCore {
   readonly config: JMAXConfig;
 
   private initialized = false;
+  private copilotClient: CopilotClient | null = null;
+  private messages: ChatMessage[] = [];
 
   constructor(options: AgentCoreOptions) {
     this.config = options.config;
@@ -73,6 +77,103 @@ export class AgentCore {
     this.initialized = true;
     this.logger.info("session", "JMAX Agent Core initialized");
   }
+
+  // ─── Chat (Copilot AI) ───────────────────────────────────────────
+
+  /**
+   * Build the system prompt by injecting project memory context.
+   */
+  private async buildSystemPrompt(): Promise<string> {
+    const parts: string[] = [
+      "You are JMAX, an Enterprise AI Engineering Agent.",
+      "You help engineers with code generation, architecture design, testing, git automation, and documentation.",
+      "Respond concisely and technically. Use markdown when helpful.",
+    ];
+
+    // Inject project memory
+    const memoryKeys = await this.memory.list();
+    for (const key of memoryKeys) {
+      const content = await this.memory.get(key);
+      if (content) {
+        parts.push(`\n--- Memory: ${key} ---\n${content}`);
+      }
+    }
+
+    // Inject available skills
+    const skills = this.skillEngine.list();
+    if (skills.length > 0) {
+      parts.push(
+        `\nAvailable skills: ${skills.map((s) => s.name).join(", ")}`
+      );
+    }
+
+    return parts.join("\n");
+  }
+
+  /**
+   * Ensure the CopilotClient is initialised.
+   */
+  private getCopilotClient(): CopilotClient {
+    if (!this.copilotClient) {
+      this.copilotClient = new CopilotClient({ logger: this.logger });
+    }
+    return this.copilotClient;
+  }
+
+  /**
+   * Send a user message and receive a full (non-streaming) AI response.
+   * Maintains conversation history across calls.
+   */
+  async chat(userMessage: string): Promise<string> {
+    // Lazy-init system prompt on first message
+    if (this.messages.length === 0) {
+      const systemPrompt = await this.buildSystemPrompt();
+      this.messages.push({ role: "system", content: systemPrompt });
+    }
+
+    this.messages.push({ role: "user", content: userMessage });
+    this.logger.info("session", `Chat message: ${userMessage.slice(0, 80)}`);
+
+    const client = this.getCopilotClient();
+    const reply = await client.chat(this.messages);
+
+    this.messages.push({ role: "assistant", content: reply });
+    return reply;
+  }
+
+  /**
+   * Send a user message and stream the AI response token-by-token.
+   * Maintains conversation history across calls.
+   */
+  async chatStream(
+    userMessage: string,
+    onToken: (token: string) => void
+  ): Promise<string> {
+    // Lazy-init system prompt on first message
+    if (this.messages.length === 0) {
+      const systemPrompt = await this.buildSystemPrompt();
+      this.messages.push({ role: "system", content: systemPrompt });
+    }
+
+    this.messages.push({ role: "user", content: userMessage });
+    this.logger.info("session", `Chat stream: ${userMessage.slice(0, 80)}`);
+
+    const client = this.getCopilotClient();
+    const reply = await client.chatStream(this.messages, onToken);
+
+    this.messages.push({ role: "assistant", content: reply });
+    return reply;
+  }
+
+  /**
+   * Reset conversation history (new session).
+   */
+  resetChat(): void {
+    this.messages = [];
+    this.logger.info("session", "Chat history cleared");
+  }
+
+  // ─── Task Processing ────────────────────────────────────────────
 
   async processRequest(request: string): Promise<Task> {
     this.logger.info("session", `Processing request: ${request}`);

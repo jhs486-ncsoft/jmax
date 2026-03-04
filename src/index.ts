@@ -8,6 +8,7 @@ import { MemoryStoreImpl } from "./memory/memory-store.js";
 import { AgentCore } from "./agent/agent-core.js";
 import { MCPClient } from "./mcp/mcp-client.js";
 import { GitAutomation } from "./git/git-automation.js";
+import { CopilotAuth_ } from "./copilot/auth.js";
 import {
   EngineeringSkill,
   JiraSkill,
@@ -25,17 +26,82 @@ program
   .description("JMAX - Enterprise AI Engineering Agent")
   .version(VERSION);
 
-// ─── Main chat command ──────────────────────────────────────────────
+// ─── Login command (GitHub Copilot OAuth Device Flow) ───────────────
+
+program
+  .command("login")
+  .description("Authenticate with GitHub Copilot via Device Flow")
+  .action(async () => {
+    const auth = new CopilotAuth_();
+
+    // Check if already logged in
+    if (await auth.isAuthenticated()) {
+      console.log("\nAlready authenticated with GitHub Copilot.");
+      console.log("Run 'jmax logout' first to re-authenticate.\n");
+      return;
+    }
+
+    console.log("\nJMAX - GitHub Copilot Authentication\n");
+
+    try {
+      const success = await auth.login(
+        (verificationUri, userCode) => {
+          console.log("Open this URL in your browser:");
+          console.log(`  ${verificationUri}\n`);
+          console.log("Enter this code:");
+          console.log(`  ${userCode}\n`);
+          console.log("Waiting for authorization...");
+        },
+        () => {
+          process.stdout.write(".");
+        }
+      );
+
+      if (success) {
+        console.log("\n\nAuthentication successful! You can now use 'jmax chat'.\n");
+      } else {
+        console.error("\nAuthentication failed. Please try again.\n");
+        process.exit(1);
+      }
+    } catch (err) {
+      console.error(
+        "\nAuthentication error:",
+        err instanceof Error ? err.message : String(err)
+      );
+      process.exit(1);
+    }
+  });
+
+// ─── Logout command ─────────────────────────────────────────────────
+
+program
+  .command("logout")
+  .description("Remove stored GitHub Copilot credentials")
+  .action(async () => {
+    const auth = new CopilotAuth_();
+    await auth.logout();
+    console.log("\nLogged out. Stored credentials removed.\n");
+  });
+
+// ─── Main chat command (Copilot streaming) ──────────────────────────
 
 program
   .command("chat")
-  .description("Start interactive AI chat session")
-  .option("-m, --model <model>", "AI model to use", "github-copilot")
-  .action(async (options) => {
+  .description("Start interactive AI chat session (requires login)")
+  .option("-m, --model <model>", "AI model to use", "gpt-4o")
+  .action(async (_options) => {
+    const auth = new CopilotAuth_();
+    if (!(await auth.isAuthenticated())) {
+      console.error("\nNot authenticated. Run 'jmax login' first.\n");
+      process.exit(1);
+    }
+
     const agent = await initAgent();
 
-    console.log(`\nJMAX v${VERSION} - AI Engineering Agent`);
-    console.log("Type your request and press Enter. Type 'exit' to quit.\n");
+    console.log(`\nJMAX v${VERSION} - AI Engineering Agent (Copilot)`);
+    console.log("Type your message and press Enter. Commands:");
+    console.log("  /clear  - Clear conversation history");
+    console.log("  /exit   - Quit\n");
 
     const readline = await import("node:readline");
     const rl = readline.createInterface({
@@ -44,29 +110,52 @@ program
     });
 
     const prompt = () => {
-      rl.question("jmax> ", async (input) => {
+      rl.question("you> ", async (input) => {
         const trimmed = input.trim();
-        if (trimmed === "exit" || trimmed === "quit") {
+
+        // Exit commands
+        if (
+          trimmed === "/exit" ||
+          trimmed === "exit" ||
+          trimmed === "quit" ||
+          trimmed === "/quit"
+        ) {
           console.log("Goodbye!");
           rl.close();
           process.exit(0);
         }
 
+        // Clear history
+        if (trimmed === "/clear") {
+          agent.resetChat();
+          console.log("Conversation cleared.\n");
+          prompt();
+          return;
+        }
+
+        // Skip empty input
         if (!trimmed) {
           prompt();
           return;
         }
 
         try {
-          const task = await agent.processRequest(trimmed);
-          console.log(
-            `\nTask '${task.title}' ${task.status === "completed" ? "completed" : "failed"}\n`
-          );
+          process.stdout.write("\njmax> ");
+
+          await agent.chatStream(trimmed, (token) => {
+            process.stdout.write(token);
+          });
+
+          // Newline after streamed response
+          process.stdout.write("\n\n");
         } catch (err) {
-          console.error(
-            "Error:",
-            err instanceof Error ? err.message : String(err)
-          );
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`\nError: ${msg}\n`);
+
+          // Hint about login if it's an auth error
+          if (msg.includes("인증") || msg.includes("login") || msg.includes("401")) {
+            console.error("Try running 'jmax login' to re-authenticate.\n");
+          }
         }
 
         prompt();
@@ -80,7 +169,7 @@ program
 
 program
   .command("run <request>")
-  .description("Run a single task")
+  .description("Run a single task through the agent pipeline")
   .action(async (request: string) => {
     const agent = await initAgent();
 
@@ -111,13 +200,15 @@ program
 
 program
   .command("status")
-  .description("Show agent status and available skills")
+  .description("Show agent status, auth, and available skills")
   .action(async () => {
     const config = await loadConfig();
-    const logger = new JMAXLogger(config.logging);
+    const auth = new CopilotAuth_();
+    const isAuth = await auth.isAuthenticated();
 
     console.log(`\nJMAX v${VERSION}`);
     console.log("─".repeat(40));
+    console.log(`Auth: ${isAuth ? "Authenticated (GitHub Copilot)" : "Not authenticated"}`);
     console.log(`Model: ${config.model.primary}`);
     console.log(`Fallback: ${config.model.fallback.join(", ")}`);
     console.log(`\nMCP Servers:`);
@@ -202,7 +293,7 @@ async function initAgent(): Promise<AgentCore> {
 
 program.parse();
 
-// Default to chat if no command specified
+// Default to help if no command specified
 if (!process.argv.slice(2).length) {
   program.outputHelp();
 }
