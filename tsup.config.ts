@@ -9,7 +9,13 @@ export default defineConfig({
   sourcemap: true,
   dts: false,
   splitting: false,
-  external: ["ink", "react", "ink-spinner", "ink-text-input"],
+  external: [
+    "ink",
+    "react",
+    "ink-spinner",
+    "ink-text-input",
+    "react-devtools-core",
+  ],
   banner: {
     js: "#!/usr/bin/env node",
   },

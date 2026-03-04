@@ -9,6 +9,7 @@ import { AgentCore } from "./agent/agent-core.js";
 import { MCPClient } from "./mcp/mcp-client.js";
 import { GitAutomation } from "./git/git-automation.js";
 import { CopilotAuth_ } from "./copilot/auth.js";
+import { renderApp } from "./ui/index.js";
 import {
   EngineeringSkill,
   JiraSkill,
@@ -89,80 +90,23 @@ program
   .command("chat")
   .description("Start interactive AI chat session (requires login)")
   .option("-m, --model <model>", "AI model to use", "gpt-4o")
-  .action(async (_options) => {
+  .action(async (options) => {
     const auth = new CopilotAuth_();
-    if (!(await auth.isAuthenticated())) {
+    const isAuthenticated = await auth.isAuthenticated();
+
+    if (!isAuthenticated) {
       console.error("\nNot authenticated. Run 'jmax login' first.\n");
       process.exit(1);
     }
 
     const agent = await initAgent();
 
-    console.log(`\nJMAX v${VERSION} - AI Engineering Agent (Copilot)`);
-    console.log("Type your message and press Enter. Commands:");
-    console.log("  /clear  - Clear conversation history");
-    console.log("  /exit   - Quit\n");
-
-    const readline = await import("node:readline");
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
+    // Launch full-screen Ink TUI
+    renderApp({
+      agent,
+      model: options.model,
+      isAuthenticated,
     });
-
-    const prompt = () => {
-      rl.question("you> ", async (input) => {
-        const trimmed = input.trim();
-
-        // Exit commands
-        if (
-          trimmed === "/exit" ||
-          trimmed === "exit" ||
-          trimmed === "quit" ||
-          trimmed === "/quit"
-        ) {
-          console.log("Goodbye!");
-          rl.close();
-          process.exit(0);
-        }
-
-        // Clear history
-        if (trimmed === "/clear") {
-          agent.resetChat();
-          console.log("Conversation cleared.\n");
-          prompt();
-          return;
-        }
-
-        // Skip empty input
-        if (!trimmed) {
-          prompt();
-          return;
-        }
-
-        try {
-          process.stdout.write("\njmax> ");
-
-          await agent.chatStream(trimmed, (token) => {
-            process.stdout.write(token);
-          });
-
-          // Newline after streamed response
-          process.stdout.write("\n\n");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`\nError: ${msg}\n`);
-
-          // Hint about login if it's an auth error
-          if (msg.includes("인증") || msg.includes("login") || msg.includes("401")) {
-            console.error("Try running 'jmax login' to re-authenticate.\n");
-          }
-        }
-
-        prompt();
-      });
-    };
-
-    prompt();
   });
 
 // ─── Run a single task ──────────────────────────────────────────────
