@@ -44,10 +44,16 @@ const App: React.FC<AppProps> = ({ agent, model, isAuthenticated }) => {
 
   const chat = useChat(agent);
 
+  // Use rows - 1 to keep outputHeight below stdout.rows.
+  // Ink uses clearTerminal (full screen repaint) when outputHeight >= stdout.rows,
+  // which causes visible flicker. By reserving one row, we stay on the
+  // incremental logUpdate path that only redraws changed lines.
+  const availableRows = rows - 1;
+
   // Calculate message area height (memoized to avoid recalc on input change)
   const messageAreaHeight = useMemo(
-    () => Math.max(rows - CHROME_HEIGHT, 5),
-    [rows]
+    () => Math.max(availableRows - CHROME_HEIGHT, 5),
+    [availableRows]
   );
 
   // Stable totalLines for scroll (avoid recomputing inline)
@@ -153,7 +159,7 @@ const App: React.FC<AppProps> = ({ agent, model, isAuthenticated }) => {
   // ─── Render ─────────────────────────────────────────────────────
 
   return (
-    <Box flexDirection="column" height={rows} width={columns}>
+    <Box flexDirection="column" height={availableRows} width={columns}>
       {/* Header */}
       <MemoHeader
         version={VERSION}
