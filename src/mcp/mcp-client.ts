@@ -1,14 +1,21 @@
 // MCP Client - Model Context Protocol 서버 연결 관리
+// Now preserves full tool metadata (name, description, inputSchema) for function-calling
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { MCPServerConfig, MCPToolCall, MCPToolResult } from "../types/index.js";
-import type { Logger } from "../types/index.js";
+import type {
+  MCPServerConfig,
+  MCPToolCall,
+  MCPToolResult,
+  MCPToolInfo,
+  ToolResult,
+  Logger,
+} from "../types/index.js";
 
 interface ConnectedServer {
   name: string;
   client: Client;
   transport: StdioClientTransport;
-  tools: string[];
+  tools: MCPToolInfo[];
 }
 
 export class MCPClient {
@@ -41,20 +48,25 @@ export class MCPClient {
 
       await client.connect(transport);
 
-      // List available tools
+      // List available tools — preserve full schema
       const toolsResponse = await client.listTools();
-      const toolNames = toolsResponse.tools.map((t) => t.name);
+      const tools: MCPToolInfo[] = toolsResponse.tools.map((t) => ({
+        server: config.name,
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: (t.inputSchema ?? {}) as Record<string, unknown>,
+      }));
 
       this.servers.set(config.name, {
         name: config.name,
         client,
         transport,
-        tools: toolNames,
+        tools,
       });
 
       this.logger.info(
         "tool",
-        `Connected to '${config.name}' with tools: ${toolNames.join(", ")}`
+        `Connected to '${config.name}' with ${tools.length} tools: ${tools.map((t) => t.name).join(", ")}`
       );
     } catch (err) {
       this.logger.error(
@@ -80,7 +92,8 @@ export class MCPClient {
       };
     }
 
-    if (!server.tools.includes(call.tool)) {
+    const toolExists = server.tools.some((t) => t.name === call.tool);
+    if (!toolExists) {
       return {
         success: false,
         content: null,
@@ -109,11 +122,49 @@ export class MCPClient {
     }
   }
 
+  /**
+   * Execute an MCP tool and return a ToolResult (compatible with agentic loop).
+   */
+  async executeTool(
+    server: string,
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<ToolResult> {
+    const result = await this.callTool({ server, tool: toolName, arguments: args });
+    if (result.success) {
+      // Serialize content for the LLM
+      const output =
+        typeof result.content === "string"
+          ? result.content
+          : JSON.stringify(result.content, null, 2);
+      return { success: true, output };
+    }
+    return {
+      success: false,
+      output: "",
+      error: result.error ?? "MCP tool call failed",
+    };
+  }
+
+  /**
+   * Get all available tools with full metadata (for function-calling).
+   */
+  getToolInfos(): MCPToolInfo[] {
+    const tools: MCPToolInfo[] = [];
+    for (const server of this.servers.values()) {
+      tools.push(...server.tools);
+    }
+    return tools;
+  }
+
+  /**
+   * Get simple tool list (legacy compat)
+   */
   getAvailableTools(): Array<{ server: string; tool: string }> {
     const tools: Array<{ server: string; tool: string }> = [];
     for (const [serverName, server] of this.servers) {
       for (const tool of server.tools) {
-        tools.push({ server: serverName, tool });
+        tools.push({ server: serverName, tool: tool.name });
       }
     }
     return tools;

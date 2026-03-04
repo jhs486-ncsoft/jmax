@@ -1,5 +1,6 @@
 // Message Component - Individual chat message with markdown rendering
 // Styled like OpenCode: left border indicator, role label, rendered content
+// Now supports tool execution messages
 
 import React, { useMemo } from "react";
 import { Box, Text } from "ink";
@@ -8,12 +9,16 @@ import { renderMarkdown } from "../markdown.js";
 
 export interface ChatMessageData {
   id: string;
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   timestamp: number;
   model?: string;
   duration?: number; // ms
   isStreaming?: boolean;
+  /** Tool execution metadata */
+  toolName?: string;
+  toolSuccess?: boolean;
+  toolCallCount?: number;
 }
 
 export interface MessageProps {
@@ -22,15 +27,26 @@ export interface MessageProps {
 }
 
 export const Message: React.FC<MessageProps> = ({ message, width }) => {
-  const { role, content, model, duration, isStreaming } = message;
+  const { role, content, model, duration, isStreaming, toolName, toolSuccess, toolCallCount } = message;
 
-  // Determine colors based on role
-  const borderColor = role === "user" ? inkColors.user : inkColors.assistant;
-  const roleLabel =
-    role === "user"
-      ? `${icons.userPrompt} You`
-      : `${icons.assistantPrompt} Assistant`;
-  const roleLabelColor = role === "user" ? inkColors.user : inkColors.assistant;
+  // Determine colors and labels based on role
+  let borderColor: string;
+  let roleLabel: string;
+  let roleLabelColor: string;
+
+  if (role === "tool") {
+    borderColor = toolSuccess ? inkColors.success : inkColors.error;
+    roleLabel = `${toolSuccess ? icons.check : icons.cross} Tool: ${toolName ?? "unknown"}`;
+    roleLabelColor = borderColor;
+  } else if (role === "user") {
+    borderColor = inkColors.user;
+    roleLabel = `${icons.userPrompt} You`;
+    roleLabelColor = inkColors.user;
+  } else {
+    borderColor = inkColors.assistant;
+    roleLabel = `${icons.assistantPrompt} Assistant`;
+    roleLabelColor = inkColors.assistant;
+  }
 
   // Render markdown content (memoized to avoid re-rendering on scroll)
   const renderedContent = useMemo(() => {
@@ -40,7 +56,7 @@ export const Message: React.FC<MessageProps> = ({ message, width }) => {
     return renderMarkdown(content, contentWidth);
   }, [content, width]);
 
-  // Build the header line: role + model + duration
+  // Build the header line: role + model + duration + tool count
   const headerParts: string[] = [];
   if (model) headerParts.push(model);
   if (duration !== undefined && !isStreaming) {
@@ -48,6 +64,9 @@ export const Message: React.FC<MessageProps> = ({ message, width }) => {
   }
   if (isStreaming) {
     headerParts.push("streaming...");
+  }
+  if (toolCallCount && toolCallCount > 0) {
+    headerParts.push(`${toolCallCount} tool call${toolCallCount > 1 ? "s" : ""}`);
   }
 
   return (

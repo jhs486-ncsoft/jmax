@@ -4,3 +4,11 @@ export { EventBus } from "./event-bus.js";
 export { TaskPlanner } from "./task-planner.js";
 export { SkillEngine } from "./skill-engine.js";
 export { ToolRegistryImpl } from "./tool-registry.js";
+export {
+  toolToOpenAI,
+  mcpToolToOpenAI,
+  skillToOpenAI,
+  parseMCPToolName,
+  parseSkillToolName,
+  createMCPToolAdapter,
+} from "./tool-converter.js";

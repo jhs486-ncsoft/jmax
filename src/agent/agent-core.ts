@@ -1,22 +1,40 @@
 // AgentCore - 메인 에이전트 오케스트레이터
+// Agentic loop: LLM call → tool_calls → execute → feed back → repeat until final text
 import type {
   JMAXConfig,
   Logger,
   MemoryStore,
   Task,
   ChatMessage,
-  SkillResult,
+  ToolCallRequest,
+  ToolCallExecution,
+  AgentResponse,
+  OpenAIToolDef,
+  ToolResult,
 } from "../types/index.js";
 import { EventBus } from "./event-bus.js";
 import { TaskPlanner } from "./task-planner.js";
 import { SkillEngine } from "./skill-engine.js";
 import { ToolRegistryImpl } from "./tool-registry.js";
 import { CopilotClient } from "../copilot/client.js";
+import type { LLMResponse, StreamCallbacks } from "../copilot/client.js";
+import { MCPClient } from "../mcp/mcp-client.js";
+import {
+  toolToOpenAI,
+  mcpToolToOpenAI,
+  skillToOpenAI,
+  parseMCPToolName,
+  parseSkillToolName,
+} from "./tool-converter.js";
+
+/** Maximum number of tool-call rounds before forcing a stop */
+const MAX_TOOL_ROUNDS = 15;
 
 export interface AgentCoreOptions {
   config: JMAXConfig;
   logger: Logger;
   memory: MemoryStore;
+  mcpClient?: MCPClient;
 }
 
 export class AgentCore {
@@ -27,6 +45,7 @@ export class AgentCore {
   readonly logger: Logger;
   readonly memory: MemoryStore;
   readonly config: JMAXConfig;
+  readonly mcpClient?: MCPClient;
 
   private initialized = false;
   private copilotClient: CopilotClient | null = null;
@@ -36,6 +55,7 @@ export class AgentCore {
     this.config = options.config;
     this.logger = options.logger;
     this.memory = options.memory;
+    this.mcpClient = options.mcpClient;
     this.eventBus = new EventBus();
     this.taskPlanner = new TaskPlanner(this.eventBus);
     this.skillEngine = new SkillEngine();
@@ -68,6 +88,15 @@ export class AgentCore {
         case "tool:called":
           this.logger.info("tool", `Tool called: ${event.tool}`);
           break;
+        case "tool:executing":
+          this.logger.info("tool", `Executing tool: ${event.toolName}`);
+          break;
+        case "tool:executed":
+          this.logger.info(
+            "tool",
+            `Tool executed: ${event.toolName} (${event.duration}ms) - ${event.result.success ? "ok" : "error"}`
+          );
+          break;
         case "error":
           this.logger.error("session", `Error: ${event.error.message}`);
           break;
@@ -78,7 +107,144 @@ export class AgentCore {
     this.logger.info("session", "JMAX Agent Core initialized");
   }
 
-  // ─── Chat (Copilot AI) ───────────────────────────────────────────
+  // ─── Tool Definitions ──────────────────────────────────────────
+
+  /**
+   * Gather all tool definitions (local + MCP + skills) as OpenAI function defs.
+   */
+  private gatherToolDefs(): OpenAIToolDef[] {
+    const defs: OpenAIToolDef[] = [];
+
+    // 1. Local tools from ToolRegistry
+    for (const tool of this.toolRegistry.list()) {
+      defs.push(toolToOpenAI(tool));
+    }
+
+    // 2. MCP tools
+    if (this.mcpClient) {
+      for (const toolInfo of this.mcpClient.getToolInfos()) {
+        defs.push(mcpToolToOpenAI(toolInfo));
+      }
+    }
+
+    // 3. Skills as tools
+    for (const skill of this.skillEngine.list()) {
+      defs.push(skillToOpenAI(skill));
+    }
+
+    return defs;
+  }
+
+  // ─── Tool Execution ────────────────────────────────────────────
+
+  /**
+   * Execute a single tool call request from the LLM.
+   * Routes to: local ToolRegistry, MCP server, or Skill.
+   */
+  private async executeTool(
+    call: ToolCallRequest
+  ): Promise<ToolCallExecution> {
+    const startTime = Date.now();
+    const funcName = call.function.name;
+
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(call.function.arguments || "{}");
+    } catch {
+      args = {};
+    }
+
+    this.eventBus.emit({
+      type: "tool:executing",
+      toolName: funcName,
+      callId: call.id,
+      args,
+    });
+
+    let result: ToolResult;
+
+    // 1. Check if it's a skill call
+    const skillName = parseSkillToolName(funcName);
+    if (skillName) {
+      result = await this.executeSkillTool(skillName, args);
+    }
+    // 2. Check if it's an MCP call
+    else {
+      const mcpInfo = parseMCPToolName(funcName);
+      if (mcpInfo && this.mcpClient) {
+        result = await this.mcpClient.executeTool(
+          mcpInfo.server,
+          mcpInfo.tool,
+          args
+        );
+      }
+      // 3. Local tool
+      else {
+        result = await this.toolRegistry.execute(funcName, args);
+      }
+    }
+
+    const duration = Date.now() - startTime;
+
+    this.eventBus.emit({
+      type: "tool:executed",
+      toolName: funcName,
+      callId: call.id,
+      result,
+      duration,
+    });
+
+    return {
+      id: call.id,
+      toolName: funcName,
+      arguments: args,
+      result,
+      duration,
+    };
+  }
+
+  /**
+   * Execute a skill as a tool call.
+   */
+  private async executeSkillTool(
+    skillName: string,
+    args: Record<string, unknown>
+  ): Promise<ToolResult> {
+    const skill = this.skillEngine.get(skillName);
+    if (!skill) {
+      return {
+        success: false,
+        output: "",
+        error: `Skill '${skillName}' not found`,
+      };
+    }
+
+    // Create a lightweight task for the skill context
+    const task: Task = {
+      id: `skill-${Date.now()}`,
+      title: `${skillName}: ${(args.action as string) ?? "execute"}`,
+      description: (args.context as string) ?? "",
+      status: "in_progress",
+      steps: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const skillResult = await this.skillEngine.execute(skillName, {
+      task,
+      memory: this.memory,
+      tools: this.toolRegistry,
+      logger: this.logger,
+    });
+
+    return {
+      success: skillResult.success,
+      output: skillResult.output,
+      error: skillResult.error,
+    };
+  }
+
+  // ─── Chat (Agentic Loop) ──────────────────────────────────────
 
   /**
    * Build the system prompt by injecting project memory context.
@@ -88,6 +254,10 @@ export class AgentCore {
       "You are JMAX, an Enterprise AI Engineering Agent.",
       "You help engineers with code generation, architecture design, testing, git automation, and documentation.",
       "Respond concisely and technically. Use markdown when helpful.",
+      "",
+      "You have access to tools that you can use to perform actions.",
+      "When you need to perform an action (e.g., search code, create files, run tests, manage git), use the appropriate tool.",
+      "Always use tools when they are available rather than just describing what you would do.",
     ];
 
     // Inject project memory
@@ -99,11 +269,11 @@ export class AgentCore {
       }
     }
 
-    // Inject available skills
+    // Inject available skills info
     const skills = this.skillEngine.list();
     if (skills.length > 0) {
       parts.push(
-        `\nAvailable skills: ${skills.map((s) => s.name).join(", ")}`
+        `\nAvailable skills (invoke via skill__ tools): ${skills.map((s) => s.name).join(", ")}`
       );
     }
 
@@ -121,10 +291,10 @@ export class AgentCore {
   }
 
   /**
-   * Send a user message and receive a full (non-streaming) AI response.
-   * Maintains conversation history across calls.
+   * Non-streaming agentic loop.
+   * Sends user message, handles tool_calls, loops until final text response.
    */
-  async chat(userMessage: string): Promise<string> {
+  async chat(userMessage: string): Promise<AgentResponse> {
     // Lazy-init system prompt on first message
     if (this.messages.length === 0) {
       const systemPrompt = await this.buildSystemPrompt();
@@ -135,20 +305,72 @@ export class AgentCore {
     this.logger.info("session", `Chat message: ${userMessage.slice(0, 80)}`);
 
     const client = this.getCopilotClient();
-    const reply = await client.chat(this.messages);
+    const toolDefs = this.gatherToolDefs();
+    const allToolCalls: ToolCallExecution[] = [];
 
-    this.messages.push({ role: "assistant", content: reply });
-    return reply;
+    let rounds = 0;
+    while (rounds < MAX_TOOL_ROUNDS) {
+      rounds++;
+
+      const response: LLMResponse = await client.chat(
+        this.messages,
+        toolDefs.length > 0 ? toolDefs : undefined
+      );
+
+      // If no tool calls, we're done
+      if (response.toolCalls.length === 0) {
+        const content = response.content ?? "";
+        this.messages.push({ role: "assistant", content });
+        return { content, toolCalls: allToolCalls };
+      }
+
+      // LLM wants to call tools
+      this.eventBus.emit({ type: "llm:tool_calls", calls: response.toolCalls });
+
+      // Record the assistant message with tool_calls
+      this.messages.push({
+        role: "assistant",
+        content: response.content,
+        tool_calls: response.toolCalls,
+      });
+
+      // Execute all tool calls
+      for (const call of response.toolCalls) {
+        const execution = await this.executeTool(call);
+        allToolCalls.push(execution);
+
+        // Add tool result to conversation
+        const resultContent = execution.result.success
+          ? execution.result.output
+          : `Error: ${execution.result.error ?? "unknown error"}`;
+
+        this.messages.push({
+          role: "tool",
+          content: resultContent,
+          tool_call_id: call.id,
+          name: call.function.name,
+        });
+      }
+    }
+
+    // Safety: max rounds exceeded
+    const fallback =
+      "I've reached the maximum number of tool-call rounds. Here's what I accomplished so far.";
+    this.messages.push({ role: "assistant", content: fallback });
+    return { content: fallback, toolCalls: allToolCalls };
   }
 
   /**
-   * Send a user message and stream the AI response token-by-token.
-   * Maintains conversation history across calls.
+   * Streaming agentic loop.
+   * Streams text tokens to onToken callback.
+   * On tool_calls: executes tools, feeds results back, calls LLM again.
+   * Final text response is fully streamed.
    */
   async chatStream(
     userMessage: string,
-    onToken: (token: string) => void
-  ): Promise<string> {
+    onToken: (token: string) => void,
+    onToolExec?: (execution: ToolCallExecution) => void
+  ): Promise<AgentResponse> {
     // Lazy-init system prompt on first message
     if (this.messages.length === 0) {
       const systemPrompt = await this.buildSystemPrompt();
@@ -159,10 +381,71 @@ export class AgentCore {
     this.logger.info("session", `Chat stream: ${userMessage.slice(0, 80)}`);
 
     const client = this.getCopilotClient();
-    const reply = await client.chatStream(this.messages, onToken);
+    const toolDefs = this.gatherToolDefs();
+    const allToolCalls: ToolCallExecution[] = [];
+    let fullContent = "";
 
-    this.messages.push({ role: "assistant", content: reply });
-    return reply;
+    let rounds = 0;
+    while (rounds < MAX_TOOL_ROUNDS) {
+      rounds++;
+
+      const callbacks: StreamCallbacks = {
+        onToken: (token) => {
+          fullContent += token;
+          onToken(token);
+        },
+      };
+
+      const response = await client.chatStream(
+        this.messages,
+        callbacks,
+        toolDefs.length > 0 ? toolDefs : undefined
+      );
+
+      // If no tool calls, we're done
+      if (response.toolCalls.length === 0) {
+        const content = response.content ?? fullContent;
+        this.messages.push({ role: "assistant", content });
+        return { content, toolCalls: allToolCalls };
+      }
+
+      // LLM wants to call tools — record the assistant message
+      this.eventBus.emit({ type: "llm:tool_calls", calls: response.toolCalls });
+
+      this.messages.push({
+        role: "assistant",
+        content: response.content,
+        tool_calls: response.toolCalls,
+      });
+
+      // Reset content accumulator for the next round
+      fullContent = "";
+
+      // Execute all tool calls
+      for (const call of response.toolCalls) {
+        const execution = await this.executeTool(call);
+        allToolCalls.push(execution);
+        onToolExec?.(execution);
+
+        const resultContent = execution.result.success
+          ? execution.result.output
+          : `Error: ${execution.result.error ?? "unknown error"}`;
+
+        this.messages.push({
+          role: "tool",
+          content: resultContent,
+          tool_call_id: call.id,
+          name: call.function.name,
+        });
+      }
+    }
+
+    // Safety fallback
+    const fallback =
+      "I've reached the maximum number of tool-call rounds. Here's what I accomplished so far.";
+    this.messages.push({ role: "assistant", content: fallback });
+    onToken(fallback);
+    return { content: fallback, toolCalls: allToolCalls };
   }
 
   /**
@@ -173,12 +456,11 @@ export class AgentCore {
     this.logger.info("session", "Chat history cleared");
   }
 
-  // ─── Task Processing ────────────────────────────────────────────
+  // ─── Task Processing (legacy pipeline) ─────────────────────────
 
   async processRequest(request: string): Promise<Task> {
     this.logger.info("session", `Processing request: ${request}`);
 
-    // 1. Create task from request
     const steps = this.planSteps(request);
     const task = this.taskPlanner.createTask(
       this.extractTitle(request),
@@ -186,7 +468,6 @@ export class AgentCore {
       steps
     );
 
-    // 2. Execute each step
     for (let i = 0; i < task.steps.length; i++) {
       this.taskPlanner.startStep(task.id, i);
 
@@ -205,7 +486,6 @@ export class AgentCore {
   }
 
   private planSteps(request: string): string[] {
-    // Default workflow based on PRD Section 11
     const steps = [
       "Context Analysis",
       "Architecture Design",
@@ -215,7 +495,6 @@ export class AgentCore {
       "Git Commit",
     ];
 
-    // Add PR/merge steps for feature requests
     const lower = request.toLowerCase();
     if (
       lower.includes("feature") ||
@@ -229,7 +508,6 @@ export class AgentCore {
   }
 
   private extractTitle(request: string): string {
-    // Simple title extraction: first 60 characters
     const title = request.length > 60 ? request.slice(0, 57) + "..." : request;
     return title;
   }
@@ -261,7 +539,6 @@ export class AgentCore {
 
   private async analyzeContext(task: Task): Promise<string> {
     this.logger.info("reasoning", `Analyzing context for: ${task.description}`);
-    // Will be connected to MCP Context7 server
     const result = await this.toolRegistry.execute("analyze_context", {
       request: task.description,
     });

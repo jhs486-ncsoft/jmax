@@ -61,7 +61,7 @@ describe("CopilotClient", () => {
 
   it("should call chat completions API for non-streaming", async () => {
     mockCreate.mockResolvedValue({
-      choices: [{ message: { content: "Hello from Copilot!" } }],
+      choices: [{ message: { content: "Hello from Copilot!" }, finish_reason: "stop" }],
     });
 
     const messages: ChatMessage[] = [
@@ -71,19 +71,30 @@ describe("CopilotClient", () => {
 
     const result = await client.chat(messages);
 
-    expect(result).toBe("Hello from Copilot!");
-    expect(mockCreate).toHaveBeenCalledWith({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: "You are a helpful assistant." },
-        { role: "user", content: "Hello" },
-      ],
+    expect(result).toEqual({
+      content: "Hello from Copilot!",
+      toolCalls: [],
+      finishReason: "stop",
     });
   });
 
-  it("should throw on empty response", async () => {
+  it("should return null content when response content is null", async () => {
     mockCreate.mockResolvedValue({
-      choices: [{ message: { content: null } }],
+      choices: [{ message: { content: null }, finish_reason: "stop" }],
+    });
+
+    const messages: ChatMessage[] = [
+      { role: "user", content: "Hello" },
+    ];
+
+    const result = await client.chat(messages);
+    expect(result.content).toBeNull();
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it("should throw on completely empty response (no choices)", async () => {
+    mockCreate.mockResolvedValue({
+      choices: [],
     });
 
     const messages: ChatMessage[] = [
@@ -124,17 +135,18 @@ describe("CopilotClient", () => {
       { role: "user", content: "Hello" },
     ];
 
-    const result = await client.chatStream(messages, (token) => {
-      tokens.push(token);
+    const result = await client.chatStream(messages, {
+      onToken: (token) => {
+        tokens.push(token);
+      },
     });
 
-    expect(result).toBe("Hello world!");
-    expect(tokens).toEqual(["Hello", " world", "!"]);
-    expect(mockCreate).toHaveBeenCalledWith({
-      model: "gpt-4o",
-      messages: [{ role: "user", content: "Hello" }],
-      stream: true,
+    expect(result).toEqual({
+      content: "Hello world!",
+      toolCalls: [],
+      finishReason: "stop",
     });
+    expect(tokens).toEqual(["Hello", " world", "!"]);
   });
 
   it("should call onDone callback in chatStream", async () => {
@@ -161,9 +173,13 @@ describe("CopilotClient", () => {
     const onDone = vi.fn();
     const messages: ChatMessage[] = [{ role: "user", content: "test" }];
 
-    await client.chatStream(messages, vi.fn(), onDone);
+    await client.chatStream(messages, { onDone });
 
-    expect(onDone).toHaveBeenCalledWith("Done");
+    expect(onDone).toHaveBeenCalledWith({
+      content: "Done",
+      toolCalls: [],
+      finishReason: "stop",
+    });
   });
 
   it("should reset client on reset()", () => {

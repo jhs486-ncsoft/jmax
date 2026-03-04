@@ -1,10 +1,11 @@
 // useChat hook - Chat state management
-// Manages messages, streaming state, and agent interaction
+// Manages messages, streaming state, tool execution feedback, and agent interaction
 
 import { useState, useCallback, useRef } from "react";
 import type { AgentCore } from "../../agent/agent-core.js";
 import type { ChatMessageData } from "../components/message.js";
 import type { StreamingPhase } from "../components/spinner.js";
+import type { ToolCallExecution } from "../../types/index.js";
 
 let messageIdCounter = 0;
 function nextId(): string {
@@ -66,11 +67,38 @@ export function useChat(agent: AgentCore): UseChatResult {
       }, 100);
 
       try {
-        const reply = await agent.chatStream(trimmed, (token) => {
-          if (cancelledRef.current) return;
-          setStreamingPhase("generating");
-          setStreamingContent((prev) => prev + token);
-        });
+        const agentResponse = await agent.chatStream(
+          trimmed,
+          // onToken callback
+          (token) => {
+            if (cancelledRef.current) return;
+            setStreamingPhase("generating");
+            setStreamingContent((prev) => prev + token);
+          },
+          // onToolExec callback
+          (execution: ToolCallExecution) => {
+            if (cancelledRef.current) return;
+            // Add tool execution as a system-style message
+            const statusIcon = execution.result.success ? "✓" : "✗";
+            const toolMsg: ChatMessageData = {
+              id: nextId(),
+              role: "tool",
+              content: `**${statusIcon} ${execution.toolName}** (${execution.duration}ms)\n${
+                execution.result.success
+                  ? execution.result.output.slice(0, 500)
+                  : `Error: ${execution.result.error}`
+              }`,
+              timestamp: Date.now(),
+              toolName: execution.toolName,
+              toolSuccess: execution.result.success,
+              duration: execution.duration,
+            };
+            setMessages((prev) => [...prev, toolMsg]);
+            // Reset streaming content after tool call (LLM will respond again)
+            setStreamingContent("");
+            setStreamingPhase("thinking");
+          }
+        );
 
         // Clear timer
         if (timerRef.current) {
@@ -85,16 +113,17 @@ export function useChat(agent: AgentCore): UseChatResult {
           const assistantMsg: ChatMessageData = {
             id: nextId(),
             role: "assistant",
-            content: reply,
+            content: agentResponse.content,
             timestamp: Date.now(),
             model: agent.config.model.primary,
             duration,
+            toolCallCount: agentResponse.toolCalls.length,
           };
           setMessages((prev) => [...prev, assistantMsg]);
 
           // Rough token estimate (4 chars ~ 1 token)
           setTokenEstimate((prev) =>
-            prev + Math.ceil((trimmed.length + reply.length) / 4)
+            prev + Math.ceil((trimmed.length + agentResponse.content.length) / 4)
           );
         }
       } catch (err) {

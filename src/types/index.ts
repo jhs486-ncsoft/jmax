@@ -86,6 +86,14 @@ export interface MCPToolResult {
   error?: string;
 }
 
+/** Full MCP tool metadata (name + description + JSON Schema) */
+export interface MCPToolInfo {
+  server: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
 // ─── Memory ─────────────────────────────────────────────────────────
 
 export interface MemoryStore {
@@ -148,6 +156,7 @@ export interface ToolParameter {
   type: "string" | "number" | "boolean" | "object" | "array";
   description: string;
   required?: boolean;
+  enum?: string[];
 }
 
 export interface ToolResult {
@@ -198,12 +207,65 @@ export interface LoggingConfig {
 
 // ─── Copilot / Chat ─────────────────────────────────────────────────
 
-export type ChatRole = "system" | "user" | "assistant";
+export type ChatRole = "system" | "user" | "assistant" | "tool";
 
 export interface ChatMessage {
   role: ChatRole;
-  content: string;
+  content: string | null;
+  /** Present on assistant messages that request tool calls */
+  tool_calls?: ToolCallRequest[];
+  /** Present on tool-role messages returning a result */
+  tool_call_id?: string;
+  /** Tool name (used with tool role) */
+  name?: string;
 }
+
+/** A single tool-call request from the LLM */
+export interface ToolCallRequest {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string; // JSON string
+  };
+}
+
+/** OpenAI-compatible tool definition sent to the API */
+export interface OpenAIToolDef {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: "object";
+      properties: Record<string, OpenAIParamSchema>;
+      required: string[];
+    };
+  };
+}
+
+export interface OpenAIParamSchema {
+  type: string;
+  description: string;
+  enum?: string[];
+}
+
+/** Result of the agentic loop: final text + all tool calls made */
+export interface AgentResponse {
+  content: string;
+  toolCalls: ToolCallExecution[];
+}
+
+/** Record of a single tool call executed during the agentic loop */
+export interface ToolCallExecution {
+  id: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  result: ToolResult;
+  duration: number; // ms
+}
+
+// ─── Auth ───────────────────────────────────────────────────────────
 
 export interface CopilotAuth {
   type: "oauth";
@@ -240,6 +302,9 @@ export type AgentEvent =
   | { type: "step:completed"; taskId: string; step: TaskStep }
   | { type: "tool:called"; tool: string; args: Record<string, unknown> }
   | { type: "tool:result"; tool: string; result: ToolResult }
+  | { type: "tool:executing"; toolName: string; callId: string; args: Record<string, unknown> }
+  | { type: "tool:executed"; toolName: string; callId: string; result: ToolResult; duration: number }
+  | { type: "llm:tool_calls"; calls: ToolCallRequest[] }
   | { type: "git:operation"; operation: GitOperation }
   | { type: "log"; level: LogLevel; category: LogCategory; message: string }
   | { type: "error"; error: Error };

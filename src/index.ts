@@ -219,7 +219,20 @@ async function initAgent(): Promise<AgentCore> {
   const memory = new MemoryStoreImpl("./memory");
   await memory.initialize();
 
-  const agent = new AgentCore({ config, logger, memory });
+  // Create MCP client and connect to configured servers
+  const mcpClient = new MCPClient(logger);
+  for (const serverCfg of config.mcp.servers) {
+    try {
+      await mcpClient.connect(serverCfg);
+    } catch (err) {
+      logger.warn(
+        "tool",
+        `Failed to connect MCP server '${serverCfg.name}': ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  const agent = new AgentCore({ config, logger, memory, mcpClient });
 
   // Register skills
   agent.skillEngine.register(new EngineeringSkill());
