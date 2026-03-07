@@ -190,11 +190,15 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
 
   // ─── Stable props for memoized children ─────────────────────────
 
-  const editorPlaceholder = chat.isStreaming
-    ? "Waiting for response... (Esc to cancel)"
-    : focusTarget === "sidebar"
-      ? "Press Tab to return to editor"
-      : "Type your message... (Tab → sidebar)";
+  const editorPlaceholder = useMemo(
+    () =>
+      chat.isStreaming
+        ? "Waiting for response... (Esc to cancel)"
+        : focusTarget === "sidebar"
+          ? "Press Tab to return to editor"
+          : "Type your message... (Tab → sidebar)",
+    [chat.isStreaming, focusTarget]
+  );
 
   const editorIsActive = !chat.isStreaming && focusTarget === "editor";
 

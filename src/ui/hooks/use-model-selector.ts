@@ -1,11 +1,14 @@
 // useModelSelector hook - Manages model list navigation and selection
 // Hardcoded model list for GitHub Copilot API compatible models
+//
+// ANTI-FLICKER: Returns a stable array reference (never re-created) and
+// memoized callbacks so that React.memo() on Sidebar is effective.
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import type { AgentCore } from "../../agent/agent-core.js";
 
 /** Available models via GitHub Copilot API */
-export const AVAILABLE_MODELS = [
+export const AVAILABLE_MODELS: readonly ModelInfo[] = [
   { id: "gpt-4o", label: "GPT-4o", provider: "OpenAI" },
   { id: "gpt-4o-mini", label: "GPT-4o Mini", provider: "OpenAI" },
   { id: "claude-sonnet-4", label: "Claude Sonnet 4", provider: "Anthropic" },
@@ -20,7 +23,8 @@ export interface ModelInfo {
 }
 
 export interface UseModelSelectorResult {
-  models: ModelInfo[];
+  /** Stable reference — never changes between renders */
+  models: readonly ModelInfo[];
   selectedIndex: number;
   activeModel: string;
   moveUp: () => void;
@@ -53,12 +57,14 @@ export function useModelSelector(agent: AgentCore): UseModelSelectorResult {
     }
   }, [agent, selectedIndex, activeModel]);
 
-  return {
-    models: [...AVAILABLE_MODELS],
+  // ANTI-FLICKER: Return the module-level constant directly — same reference every render.
+  // Never use [...AVAILABLE_MODELS] which creates a new array and breaks React.memo.
+  return useMemo(() => ({
+    models: AVAILABLE_MODELS,
     selectedIndex,
     activeModel,
     moveUp,
     moveDown,
     confirm,
-  };
+  }), [selectedIndex, activeModel, moveUp, moveDown, confirm]);
 }

@@ -1,19 +1,28 @@
 // Sidebar Component - Right sidebar with Model Selector, System Status, Sessions
 // Always visible, fixed width, bordered on the left
+//
+// Flickering prevention:
+// - All sub-sections are React.memo'd so high-frequency prop changes
+//   (tokenEstimate, messageCount, isStreaming) only re-render StatusSection,
+//   not ModelList or SessionSection.
+// - Divider string is a module-level constant (stable reference).
 
-import React from "react";
+import React, { memo } from "react";
 import { Box, Text } from "ink";
 import { inkColors } from "../theme.js";
 import type { ModelInfo } from "../hooks/use-model-selector.js";
 
 export const SIDEBAR_WIDTH = 28;
 
+// Module-level constant — avoids creating a new string every render
+const DIVIDER_STRING = "─".repeat(SIDEBAR_WIDTH - 4);
+
 export interface SidebarProps {
   // Focus
   isFocused: boolean;
 
   // Model selector
-  models: ModelInfo[];
+  models: readonly ModelInfo[];
   selectedIndex: number;
   activeModel: string;
 
@@ -29,24 +38,24 @@ export interface SidebarProps {
 
 // ─── Section Header ──────────────────────────────────────────────────
 
-const SectionHeader: React.FC<{ title: string }> = ({ title }) => (
+const SectionHeader: React.FC<{ title: string }> = memo(({ title }) => (
   <Box paddingX={1}>
     <Text bold color={inkColors.accent}>
       {title}
     </Text>
   </Box>
-);
+));
 
 // ─── Model Selector Section ─────────────────────────────────────────
 
 interface ModelListProps {
-  models: ModelInfo[];
+  models: readonly ModelInfo[];
   selectedIndex: number;
   activeModel: string;
   isFocused: boolean;
 }
 
-const ModelList: React.FC<ModelListProps> = ({
+const MemoModelList = memo<ModelListProps>(({
   models,
   selectedIndex,
   activeModel,
@@ -79,9 +88,22 @@ const ModelList: React.FC<ModelListProps> = ({
       );
     })}
   </Box>
-);
+));
+
+// ─── Divider ────────────────────────────────────────────────────────
+
+const Divider = memo(() => (
+  <Box paddingX={1} marginY={0}>
+    <Text color={inkColors.borderDim}>
+      {DIVIDER_STRING}
+    </Text>
+  </Box>
+));
 
 // ─── System Status Section ──────────────────────────────────────────
+// This is the ONLY section that receives high-frequency props
+// (messageCount, tokenEstimate, isStreaming). By memo-ing it separately,
+// changes here don't cause ModelList or SessionSection to re-render.
 
 interface StatusSectionProps {
   isAuthenticated: boolean;
@@ -91,7 +113,7 @@ interface StatusSectionProps {
   activeModel: string;
 }
 
-const StatusSection: React.FC<StatusSectionProps> = ({
+const MemoStatusSection = memo<StatusSectionProps>(({
   isAuthenticated,
   isStreaming,
   messageCount,
@@ -126,18 +148,18 @@ const StatusSection: React.FC<StatusSectionProps> = ({
       )}
     </Box>
   );
-};
+});
 
 // ─── Session Section ────────────────────────────────────────────────
 
-const SessionSection: React.FC = () => (
+const MemoSessionSection = memo(() => (
   <Box flexDirection="column" paddingX={1}>
     <Text color={inkColors.primary}>● Current Session</Text>
     <Text color={inkColors.muted} dimColor>
       (session history TBD)
     </Text>
   </Box>
-);
+));
 
 // ─── Main Sidebar ───────────────────────────────────────────────────
 
@@ -165,25 +187,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       borderLeft={true}
       overflow="hidden"
     >
-      {/* Model Selector */}
+      {/* Model Selector — only re-renders on model/focus changes */}
       <SectionHeader title="Models" />
-      <ModelList
+      <MemoModelList
         models={models}
         selectedIndex={selectedIndex}
         activeModel={activeModel}
         isFocused={isFocused}
       />
 
-      {/* Divider */}
-      <Box paddingX={1} marginY={0}>
-        <Text color={inkColors.borderDim}>
-          {"─".repeat(SIDEBAR_WIDTH - 4)}
-        </Text>
-      </Box>
+      <Divider />
 
-      {/* System Status */}
+      {/* System Status — re-renders on streaming stats changes */}
       <SectionHeader title="Status" />
-      <StatusSection
+      <MemoStatusSection
         isAuthenticated={isAuthenticated}
         isStreaming={isStreaming}
         messageCount={messageCount}
@@ -191,16 +208,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         activeModel={activeModel}
       />
 
-      {/* Divider */}
-      <Box paddingX={1} marginY={0}>
-        <Text color={inkColors.borderDim}>
-          {"─".repeat(SIDEBAR_WIDTH - 4)}
-        </Text>
-      </Box>
+      <Divider />
 
-      {/* Sessions */}
+      {/* Sessions — never re-renders (no props) */}
       <SectionHeader title="Sessions" />
-      <SessionSection />
+      <MemoSessionSection />
     </Box>
   );
 };
