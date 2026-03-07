@@ -52,6 +52,17 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
   const chat = useChat(agent);
   const modelSelector = useModelSelector(agent);
 
+  // ANTI-FLICKER: Destructure stable values from chat early.
+  // useChat now returns a useMemo'd object, and each field is individually
+  // stable (useState values / useCallback refs).  By destructuring here,
+  // we avoid capturing the whole `chat` object in callbacks (which would
+  // defeat memo stabilization even though the object is now memoized).
+  const {
+    messages, streamingContent, streamingPhase,
+    streamDuration, isStreaming, tokenEstimate,
+    sendMessage, clearHistory, cancelStream,
+  } = chat;
+
   // Use rows - 1 to keep outputHeight below stdout.rows.
   // Ink uses clearTerminal (full screen repaint) when outputHeight >= stdout.rows,
   // which causes visible flicker. By reserving one row, we stay on the
@@ -72,8 +83,8 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
 
   // Stable totalLines for scroll (avoid recomputing inline)
   const totalLines = useMemo(
-    () => chat.messages.length * 4 + (chat.isStreaming ? 4 : 0),
-    [chat.messages.length, chat.isStreaming]
+    () => messages.length * 4 + (isStreaming ? 4 : 0),
+    [messages.length, isStreaming]
   );
 
   // Scroll management
@@ -84,6 +95,8 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
   });
 
   // ─── Input Handling ─────────────────────────────────────────────
+  // ANTI-FLICKER: handleSubmit depends on specific stable callbacks
+  // destructured above, not the whole `chat` object.
 
   const handleSubmit = useCallback(
     (value: string) => {
@@ -96,17 +109,17 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
       }
 
       if (trimmed === "/clear") {
-        chat.clearHistory();
+        clearHistory();
         setInputValue("");
         return;
       }
 
-      if (trimmed && !chat.isStreaming) {
-        chat.sendMessage(trimmed);
+      if (trimmed && !isStreaming) {
+        sendMessage(trimmed);
         setInputValue("");
       }
     },
-    [chat, exit]
+    [sendMessage, clearHistory, isStreaming, exit]
   );
 
   // ─── Keyboard Shortcuts ─────────────────────────────────────────
@@ -121,8 +134,8 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
 
     // Ctrl+C: quit (with confirmation)
     if (input === "c" && key.ctrl) {
-      if (chat.isStreaming) {
-        chat.cancelStream();
+      if (isStreaming) {
+        cancelStream();
       } else if (showQuitConfirm) {
         exit();
       } else {
@@ -134,22 +147,22 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
 
     // Ctrl+N: new session
     if (input === "n" && key.ctrl) {
-      chat.clearHistory();
+      clearHistory();
       setInputValue("");
       return;
     }
 
     // Ctrl+L: clear screen (same as /clear)
     if (input === "l" && key.ctrl) {
-      chat.clearHistory();
+      clearHistory();
       setInputValue("");
       return;
     }
 
     // Escape: cancel streaming or quit confirm
     if (key.escape) {
-      if (chat.isStreaming) {
-        chat.cancelStream();
+      if (isStreaming) {
+        cancelStream();
       }
       if (showQuitConfirm) {
         setShowQuitConfirm(false);
@@ -192,15 +205,15 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
 
   const editorPlaceholder = useMemo(
     () =>
-      chat.isStreaming
+      isStreaming
         ? "Waiting for response... (Esc to cancel)"
         : focusTarget === "sidebar"
           ? "Press Tab to return to editor"
           : "Type your message... (Tab → sidebar)",
-    [chat.isStreaming, focusTarget]
+    [isStreaming, focusTarget]
   );
 
-  const editorIsActive = !chat.isStreaming && focusTarget === "editor";
+  const editorIsActive = !isStreaming && focusTarget === "editor";
 
   // ─── Render ─────────────────────────────────────────────────────
 
@@ -213,15 +226,15 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
           version={VERSION}
           model={modelSelector.activeModel}
           isAuthenticated={isAuthenticated}
-          isStreaming={chat.isStreaming}
+          isStreaming={isStreaming}
         />
 
         {/* Message Area */}
         <Box flexDirection="column" flexGrow={1}>
           <MemoMessageList
-            messages={chat.messages}
-            streamingContent={chat.streamingContent}
-            streamingPhase={chat.streamingPhase}
+            messages={messages}
+            streamingContent={streamingContent}
+            streamingPhase={streamingPhase}
             width={mainWidth}
             height={messageAreaHeight}
             scrollState={scroll.state}
@@ -248,11 +261,11 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
 
         {/* Status Bar */}
         <MemoStatusBar
-          messageCount={chat.messages.length}
-          tokenEstimate={chat.tokenEstimate}
+          messageCount={messages.length}
+          tokenEstimate={tokenEstimate}
           model={modelSelector.activeModel}
-          isStreaming={chat.isStreaming}
-          streamDuration={chat.streamDuration}
+          isStreaming={isStreaming}
+          streamDuration={streamDuration}
         />
       </Box>
 
@@ -263,9 +276,9 @@ const App: React.FC<AppProps> = ({ agent, isAuthenticated }) => {
         selectedIndex={modelSelector.selectedIndex}
         activeModel={modelSelector.activeModel}
         isAuthenticated={isAuthenticated}
-        isStreaming={chat.isStreaming}
-        messageCount={chat.messages.length}
-        tokenEstimate={chat.tokenEstimate}
+        isStreaming={isStreaming}
+        messageCount={messages.length}
+        tokenEstimate={tokenEstimate}
         height={availableRows}
       />
     </Box>
@@ -282,6 +295,15 @@ export interface RenderAppOptions {
 export function renderApp(options: RenderAppOptions): void {
   const { agent, isAuthenticated = true } = options;
 
+  // ANTI-FLICKER: Suppress logger console output before TUI starts.
+  // Ink's patchConsole intercepts console.log/warn/error and turns them into
+  // Static output, which triggers a full clear+rewrite cycle (this.log.clear()
+  // + stdout.write(data) + this.log(output)) — causing severe screen flicker.
+  // Logger continues writing to files; only console output is suppressed.
+  if ("suppressConsole" in agent.logger) {
+    (agent.logger as { suppressConsole: boolean }).suppressConsole = true;
+  }
+
   render(
     <App
       agent={agent}
@@ -289,7 +311,11 @@ export function renderApp(options: RenderAppOptions): void {
     />,
     {
       exitOnCtrlC: false,
-      patchConsole: true,
+      // ANTI-FLICKER: Disable patchConsole. With logger console output
+      // suppressed above, there's no need for Ink to intercept console calls.
+      // This eliminates the Static output path entirely, avoiding the
+      // log.clear() + log(output) double-write on every intercepted log.
+      patchConsole: false,
     }
   );
 }

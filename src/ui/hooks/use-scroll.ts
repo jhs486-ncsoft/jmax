@@ -114,7 +114,9 @@ export function useScroll(options: UseScrollOptions): UseScrollResult {
     [clampedOffset, totalLines, viewportHeight, isAtBottom]
   );
 
-  return {
+  // ANTI-FLICKER: Memoize the return object so parent components that
+  // destructure the result don't trigger re-renders from a new object reference.
+  return useMemo(() => ({
     state,
     scrollUp,
     scrollDown,
@@ -122,5 +124,5 @@ export function useScroll(options: UseScrollOptions): UseScrollResult {
     scrollToBottom,
     pageUp,
     pageDown,
-  };
+  }), [state, scrollUp, scrollDown, scrollToTop, scrollToBottom, pageUp, pageDown]);
 }

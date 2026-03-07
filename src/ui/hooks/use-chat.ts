@@ -1,7 +1,7 @@
 // useChat hook - Chat state management
 // Manages messages, streaming state, tool execution feedback, and agent interaction
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { AgentCore } from "../../agent/agent-core.js";
 import type { ChatMessageData } from "../components/message.js";
 import type { StreamingPhase } from "../components/spinner.js";
@@ -161,7 +161,10 @@ export function useChat(agent: AgentCore): UseChatResult {
     agent.resetChat();
   }, [agent]);
 
-  return {
+  // ANTI-FLICKER: Memoize the return object so consumers that depend on the
+  // whole result (e.g., handleSubmit's `chat` dep) don't see a new reference
+  // every render.  Only re-creates when any value actually changes.
+  return useMemo(() => ({
     messages,
     streamingContent,
     streamingPhase,
@@ -171,5 +174,15 @@ export function useChat(agent: AgentCore): UseChatResult {
     sendMessage,
     cancelStream,
     clearHistory,
-  };
+  }), [
+    messages,
+    streamingContent,
+    streamingPhase,
+    streamDuration,
+    isStreaming,
+    tokenEstimate,
+    sendMessage,
+    cancelStream,
+    clearHistory,
+  ]);
 }
